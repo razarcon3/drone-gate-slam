@@ -21,9 +21,10 @@ ODOM_LOCAL_TOPIC = "/airsim_node/Drone1/odom_local"
 
 # topics to write
 FC_IMG_RGB_TOPIC = "/airsim_node/Drone1/front_center/rgb"
+FC_IMG_MONO_TOPIC = "/airsim_node/Drone1/front_center/mono"
 FC_IMG_DEPTH_TOPIC = "/airsim_node/Drone1/front_center/depth"
 FC_IMG_DEPTHVIS_TOPIC = "/airsim_node/Drone1/front_center/depthvis"
-FR_IMG_RGB_TOPIC = "/airsim_node/Drone1/front_right/rgb"
+FR_IMG_MONO_TOPIC = "/airsim_node/Drone1/front_right/mono"
 
 IMAGE_CAPTURE_FREQ = 24 # in HZ how many times image is captured per second
 VISUALIZE = False
@@ -127,9 +128,10 @@ def main():
         image_msg_type_str = "sensor_msgs/msg/Image"
         new_topics_meta = [
             rosbag2_py.TopicMetadata(name=FC_IMG_RGB_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
+            rosbag2_py.TopicMetadata(name=FC_IMG_MONO_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
             rosbag2_py.TopicMetadata(name=FC_IMG_DEPTH_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
             rosbag2_py.TopicMetadata(name=FC_IMG_DEPTHVIS_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
-            rosbag2_py.TopicMetadata(name=FR_IMG_RGB_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
+            rosbag2_py.TopicMetadata(name=FR_IMG_MONO_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
         ]
         for topic_meta in new_topics_meta:
              # Avoid re-registering if somehow names overlap (unlikely here)
@@ -215,9 +217,10 @@ def main():
                 
                 front_center_image_rgb = np.frombuffer(img_responses[0].image_data_uint8, dtype=np.uint8).reshape(img_responses[0].height,
                                                                                              img_responses[0].width, 3)
-                front_right_image_rgb = np.frombuffer(img_responses[2].image_data_uint8, dtype=np.uint8).reshape(img_responses[2].height,
-                                                                                             img_responses[2].width, 3)
+                front_right_image_mono = cv2.cvtColor(np.frombuffer(img_responses[2].image_data_uint8, dtype=np.uint8).reshape(img_responses[2].height,
+                                                                                             img_responses[2].width, 3), cv2.COLOR_RGB2GRAY)
                 
+                front_center_image_mono = cv2.cvtColor(front_center_image_rgb, cv2.COLOR_RGB2GRAY)
                 
                 front_center_depth = (airsim.list_to_2d_float_array(img_responses[1].image_data_float, img_responses[1].width,
                                                            img_responses[1].height)
@@ -231,18 +234,21 @@ def main():
                 
                 
                 front_center_rgb_img_msg = npimg_to_ros2imgmsg(front_center_image_rgb, newImgHeader, encoding='8UC3')
+                front_center_mono_img_msg = npimg_to_ros2imgmsg(front_center_image_mono, newImgHeader, encoding="mono8")
                 front_center_depth_img_msg = npimg_to_ros2imgmsg(front_center_depth, newImgHeader, encoding="32FC1")
                 front_center_depth_vis_img_msg = npimg_to_ros2imgmsg(depth_vis, newImgHeader, encoding="passthrough")
-                front_right_rgb_img_msg = npimg_to_ros2imgmsg(front_right_image_rgb, newImgHeader, encoding='8UC3')
+                front_right_mono_img_msg = npimg_to_ros2imgmsg(front_right_image_mono, newImgHeader, encoding='mono8')
                 
                 writer.write(FC_IMG_RGB_TOPIC, serialize_message(front_center_rgb_img_msg), timestamp)
+                writer.write(FC_IMG_MONO_TOPIC, serialize_message(front_center_mono_img_msg), timestamp)
                 writer.write(FC_IMG_DEPTH_TOPIC, serialize_message(front_center_depth_img_msg), timestamp)
                 writer.write(FC_IMG_DEPTHVIS_TOPIC, serialize_message(front_center_depth_vis_img_msg), timestamp)
-                writer.write(FR_IMG_RGB_TOPIC, serialize_message(front_right_rgb_img_msg), timestamp)
+                writer.write(FR_IMG_MONO_TOPIC, serialize_message(front_right_mono_img_msg), timestamp)
                 
                 if VISUALIZE:
                     cv2.imshow("front_center_image_rgb", front_center_image_rgb)
-                    cv2.imshow("front_right_image_rgb", front_right_image_rgb)
+                    cv2.imshow("front_center_image_mono", front_center_image_mono)
+                    cv2.imshow("front_right_image_mono", front_right_image_mono)
                     cv2.imshow("depth_vis", depth_vis)
                     cv2.waitKey(0)
                 # Add a small sleep to allow AirSim to process/render, otherwise it might be too fast

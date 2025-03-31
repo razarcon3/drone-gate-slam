@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 import argparse
 from rclpy.serialization import deserialize_message
 from rosidl_runtime_py.utilities import get_message
