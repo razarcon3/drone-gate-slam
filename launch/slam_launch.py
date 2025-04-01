@@ -27,16 +27,12 @@ def generate_launch_description():
     )
 
     # Argument for optional delay before starting bag playback (in seconds)
-    delay_arg = DeclareLaunchArgument(
-        'delay',
+    play_delay_arg = DeclareLaunchArgument(
+        'play_delay',
         default_value='10.0', # Default to no delay
         description='Delay in seconds before starting bag playback.'
     )
 
-    # --- Define Actions ---
-
-    # Action to launch your specific node
-    # ** REPLACE 'your_package_name' and 'your_node_executable' **
     vins_fusion = Node(
         package='vins',      # <-- Replace this
         executable='vins_node', # <-- Replace this
@@ -99,8 +95,9 @@ def generate_launch_description():
     # Add arguments
     ld.add_action(bag_path_arg)
     ld.add_action(vins_fusion_config_arg)
-    ld.add_action(delay_arg)
+    ld.add_action(play_delay_arg)
 
+    # Add SLAM nodes
     ld.add_action(vins_fusion)
     
     # add foxglove studio
@@ -108,10 +105,10 @@ def generate_launch_description():
     ld.add_action(foxglove_studio)
     
 
-    # Add the action to play the bag, potentially delayed
+    # Add the action to play the bag
     ld.add_action(
         TimerAction(
-            period=LaunchConfiguration('delay'), # Delay is configurable via launch argument
+            period=LaunchConfiguration('play_delay'), # Delay is configurable via launch argument
             actions=[
                 LogInfo(msg="Starting ros2 bag play..."),
                 bag_play_action

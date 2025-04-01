@@ -1,7 +1,6 @@
 import argparse
 from rclpy.serialization import deserialize_message, serialize_message
 from rosidl_runtime_py.utilities import get_message
-# from std_msgs.msg import String # No longer needed unless used elsewhere
 from nav_msgs.msg import Odometry, Path
 from geometry_msgs.msg import PoseStamped, Pose # Import Pose
 from sensor_msgs.msg import Image
@@ -13,9 +12,7 @@ import cv2 # Not used in this snippet, can remove if not needed elsewhere
 import cosysairsim as airsim
 import time # Imported twice, remove one
 import numpy as np # Keep for potential future use or other parts
-# from scipy.spatial.transform import Rotation as ScipyRotation # No longer needed for this core conversion
 from cv_bridge import CvBridge, CvBridgeError  # Not used here
-# from sensor_msgs.msg import Image  # Not used here
 
 # Topic to read from
 ODOM_LOCAL_TOPIC = "/airsim_node/Drone1/odom_local"

@@ -1,0 +1,9 @@
+/airsim_node/Drone1/front_center/depth
+/airsim_node/Drone1/front_center/depthvis
+/airsim_node/Drone1/front_center/rgb
+/airsim_node/Drone1/odom_local
+/airsim_node/Drone1/odom_local_path
+/keyframe_pose
+/path
+/tf
+/tf_static
