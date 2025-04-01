@@ -2,8 +2,8 @@ import argparse
 from rclpy.serialization import deserialize_message, serialize_message
 from rosidl_runtime_py.utilities import get_message
 # from std_msgs.msg import String # No longer needed unless used elsewhere
-from nav_msgs.msg import Odometry
-from geometry_msgs.msg import PoseWithCovariance, Pose # Import Pose
+from nav_msgs.msg import Odometry, Path
+from geometry_msgs.msg import PoseStamped, Pose # Import Pose
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 
@@ -17,6 +17,7 @@ import numpy as np # Keep for potential future use or other parts
 from cv_bridge import CvBridge, CvBridgeError  # Not used here
 # from sensor_msgs.msg import Image  # Not used here
 
+# Topic to read from
 ODOM_LOCAL_TOPIC = "/airsim_node/Drone1/odom_local"
 
 # topics to write
@@ -25,6 +26,7 @@ FC_IMG_MONO_TOPIC = "/airsim_node/Drone1/front_center/mono"
 FC_IMG_DEPTH_TOPIC = "/airsim_node/Drone1/front_center/depth"
 FC_IMG_DEPTHVIS_TOPIC = "/airsim_node/Drone1/front_center/depthvis"
 FR_IMG_MONO_TOPIC = "/airsim_node/Drone1/front_right/mono"
+ODOM_LOCAL_PATH_TOPIC = "/airsim_node/Drone1/odom_local_path"
 
 IMAGE_CAPTURE_FREQ = 24 # in HZ how many times image is captured per second
 VISUALIZE = False
@@ -126,12 +128,15 @@ def main():
     print("Registering new AirSim image topics:")
     try:
         image_msg_type_str = "sensor_msgs/msg/Image"
+        path_msg_type_str = "nav_msgs/msg/Path"
         new_topics_meta = [
             rosbag2_py.TopicMetadata(name=FC_IMG_RGB_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
             rosbag2_py.TopicMetadata(name=FC_IMG_MONO_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
             rosbag2_py.TopicMetadata(name=FC_IMG_DEPTH_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
             rosbag2_py.TopicMetadata(name=FC_IMG_DEPTHVIS_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
             rosbag2_py.TopicMetadata(name=FR_IMG_MONO_TOPIC, type=image_msg_type_str, serialization_format="cdr"),
+            rosbag2_py.TopicMetadata(name=ODOM_LOCAL_PATH_TOPIC, type=path_msg_type_str, serialization_format="cdr")
+            
         ]
         for topic_meta in new_topics_meta:
              # Avoid re-registering if somehow names overlap (unlikely here)
@@ -141,13 +146,11 @@ def main():
                  print(f"  Registered: {topic_meta.name} ({topic_meta.type})")
              else:
                  print(f"  Skipping registration (already exists): {topic_meta.name}")
-
     except Exception as e:
         print(f"Error registering new AirSim topics: {e}")
         del writer
         del reader
         return
-    
     
     def get_msg_type_from_name(topic_name):
         if topic_name in topic_type_map:
@@ -171,6 +174,7 @@ def main():
     client.armDisarm(True, "cv") # Arm if necessary for pose setting to stick sometimes
 
     last_capture_time_stamp = None # units is nanoseconds
+    cumulative_path = Path()
     while reader.has_next():
         (topic, data, timestamp) = reader.read_next() # timestamp is in nanoseconds
         
@@ -178,33 +182,44 @@ def main():
         writer.write(topic, data, timestamp)
         
         if topic == ODOM_LOCAL_TOPIC:
-            # Handles image capture frequency
-            if last_capture_time_stamp is None:
-                last_capture_time_stamp = timestamp
-            if (timestamp - last_capture_time_stamp) <= ((1/IMAGE_CAPTURE_FREQ) * 1e9):
-                continue
-            
-            last_capture_time_stamp = timestamp
-            
-            msg_type = get_msg_type_from_name(topic)
-            if msg_type is None:
-                print(f"Skipping message for topic {topic} due to message type issue.")
-                continue
-
             try:
+                msg_type = get_msg_type_from_name(topic)
+                if msg_type is None:
+                    print(f"Skipping message for topic {topic} due to message type issue.")
+                    continue
                 msg: Odometry = deserialize_message(data, msg_type)
-                ros2_pose: Pose = msg.pose.pose # Use Pose directly
+                odom_local_header: Header = msg.header # Get the header from the odometry message
+                odom_local_pose: Pose = msg.pose.pose # Use Pose directly
+                
+                # Handles image capture frequency
+                if last_capture_time_stamp is None:
+                    last_capture_time_stamp = timestamp
+                if (timestamp - last_capture_time_stamp) <= ((1/IMAGE_CAPTURE_FREQ) * 1e9):
+                    continue
+                
+                # create path for visualizing the GT odom local pose
+                pose_stamped = PoseStamped()
+                pose_stamped.header = odom_local_header # Use the odom header for the individual pose
+                pose_stamped.pose = odom_local_pose
+                cumulative_path.poses.append(pose_stamped)
 
+                # --- Update the main Path header ---
+                # Set the frame_id from the first odom message, then keep it
+                if not cumulative_path.header.frame_id:
+                    cumulative_path.header.frame_id = odom_local_header.frame_id
+                # Update the timestamp to the latest pose's timestamp
+                cumulative_path.header.stamp = odom_local_header.stamp
+
+                # --- Write the updated Path message to the output bag ---
+                serialized_path = serialize_message(cumulative_path)
+                writer.write(ODOM_LOCAL_PATH_TOPIC, serialized_path, timestamp)
+                
+                
+                last_capture_time_stamp = timestamp
+                
+                
                 # Convert the ROS2 Pose to AirSim Pose
-                vehicle_pose_airsim = convert_ros2_to_airsim_pose(ros2_pose)
-
-                # print(f"Timestamp: {timestamp}")
-                # print(f"  ROS Pose: Pos(x={ros2_pose.position.x:.2f}, y={ros2_pose.position.y:.2f}, z={ros2_pose.position.z:.2f}) "
-                #       f"Ori(x={ros2_pose.orientation.x:.2f}, y={ros2_pose.orientation.y:.2f}, z={ros2_pose.orientation.z:.2f}, w={ros2_pose.orientation.w:.2f})")
-                # print(f"  AirSim Pose: Pos(x={vehicle_pose_airsim.position.x_val:.2f}, y={vehicle_pose_airsim.position.y_val:.2f}, z={vehicle_pose_airsim.position.z_val:.2f}) "
-                #       f"Ori(w={vehicle_pose_airsim.orientation.w_val:.2f}, x={vehicle_pose_airsim.orientation.x_val:.2f}, y={vehicle_pose_airsim.orientation.y_val:.2f}, z={vehicle_pose_airsim.orientation.z_val:.2f})")
-                # 
-                # 
+                vehicle_pose_airsim = convert_ros2_to_airsim_pose(odom_local_pose)
                 client.simSetVehiclePose(vehicle_pose_airsim, True, "cv") # Use the correct vehicle name if not "cv"
 
                 # Capture the images
