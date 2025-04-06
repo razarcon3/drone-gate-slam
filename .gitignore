@@ -1,1 +1,2 @@
-resource/full_model.pth
+__pycache__
+resource/frcnn_full_model.pth

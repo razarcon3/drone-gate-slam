@@ -9,8 +9,9 @@ import time
 import cv2
 from cv_bridge import CvBridge, CvBridgeError  # Import CvBridge
 from sensor_msgs.msg import Image  # Import the Image message type
+from CornerDetector import CornerDetector
 
-IMAGE_TOPIC = "/airsim_node/Drone1/front_center_Scene/image"
+IMAGE_TOPIC = "/airsim_node/Drone1/front_center/rgb"
 
 
 def main():
@@ -42,6 +43,7 @@ def main():
 
     latest_depth_image, latest_GT_odom_local = None, None
 
+    corner_detector = CornerDetector()
 
     while reader.has_next():
         topic, data, timestamp = reader.read_next()
@@ -51,7 +53,7 @@ def main():
 
             try:
                 # Convert ROS Image message to OpenCV image
-                cv_image = bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")  # Or "passthrough" for no encoding change
+                cv_image = bridge.imgmsg_to_cv2(msg, desired_encoding="passthrough")  # Or "passthrough" for no encoding change
                 # "bgr8": color image with blue-green-red color order
                 # "mono8" or "gray": Grayscale image
                 # "passthrough": Keeps the original encoding.  Important if you have, e.g., 16-bit images.
@@ -59,12 +61,14 @@ def main():
             except CvBridgeError as e:
                 print(e)
                 continue  # Skip to the next message if conversion fails
-
+            corner_detector.createPrediction(cv_image)
+            visualization_img = corner_detector.getCurrentVisualization()
+            
             # Now you have the image in OpenCV format (cv_image)
             # You can display it, process it, save it, etc.
             print(f"Received image at timestamp: {timestamp}")
-            cv2.imshow("Image window", cv_image)
-            cv2.waitKey(3)
+            cv2.imshow("Image window", visualization_img)
+            cv2.waitKey(0)
         
         
         msg_type = get_message(typename(topic))
