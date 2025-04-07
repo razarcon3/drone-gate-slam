@@ -10,8 +10,13 @@ import cv2
 from cv_bridge import CvBridge, CvBridgeError  # Import CvBridge
 from sensor_msgs.msg import Image  # Import the Image message type
 from CornerDetector import CornerDetector
+from FrontEnd import FrontEnd
 
-IMAGE_TOPIC = "/airsim_node/Drone1/front_center/rgb"
+import torch
+import numpy as np
+
+RGB_IMAGE_TOPIC = "/airsim_node/Drone1/front_center/rgb"
+KEYFRAME_POSE_TOPIC = "/keyframe_pose"
 
 
 def main():
@@ -41,13 +46,18 @@ def main():
     # Initialize CvBridge
     bridge = CvBridge()
 
-    latest_depth_image, latest_GT_odom_local = None, None
-
-    corner_detector = CornerDetector()
-
+    corner_detector = CornerDetector(device = torch.device("cuda"))
+    front_end = FrontEnd()
+    
+    images = []
+    num_images = 0
+    offset_counter = 0
+    
     while reader.has_next():
         topic, data, timestamp = reader.read_next()
-        if topic == IMAGE_TOPIC:  # Only process the specified image topic
+        
+        
+        if topic == RGB_IMAGE_TOPIC:  # Only process the specified image topic
             msg_type = get_message(typename(topic))
             msg = deserialize_message(data, msg_type)
 
@@ -61,20 +71,49 @@ def main():
             except CvBridgeError as e:
                 print(e)
                 continue  # Skip to the next message if conversion fails
-            corner_detector.createPrediction(cv_image)
-            visualization_img = corner_detector.getCurrentVisualization()
+            
+            front_end.process_image(cv_image)
+            #corner_detector.createPrediction(cv_image)
+            #visualization_img = corner_detector.getCurrentVisualization()
             
             # Now you have the image in OpenCV format (cv_image)
             # You can display it, process it, save it, etc.
-            print(f"Received image at timestamp: {timestamp}")
-            cv2.imshow("Image window", visualization_img)
-            cv2.waitKey(0)
+            print(f"Received RGB image at timestamp: {timestamp}")
+            #cv2.imshow("Image window", visualization_img)
+            #cv2.waitKey(0)
+            
+            # if offset_counter >= 120:
+            #     if num_images < 50:
+            #         images.append(cv_image)
+            #         num_images += 1
+            # offset_counter += 1
+            
         
+        # if topic == 
         
-        msg_type = get_message(typename(topic))
-        msg = deserialize_message(data, msg_type)
-        print(topic)
-        
+        if topic == KEYFRAME_POSE_TOPIC:
+            msg_type = get_message(typename(topic))
+            msg = deserialize_message(data, msg_type)
+            print(topic, timestamp)
+    
+    
+    # queries = torch.tensor([
+    #     [0., 177., 66.],  # point tracked from the first frame
+    # ]).cuda()
+    
+    # video_chunk = (
+    #             torch.tensor(
+    #                 np.stack(images), device=torch.device("cuda") # Shape becomes (2, H, W, C)
+    #             )
+    #             .float()                                  # Shape (2, H, W, C), dtype float32
+    #             .permute(0, 3, 1, 2)                      # Shape becomes (2, C, H, W)
+    #             [None]                                    # Shape becomes (1, 2, C, H, W)
+    #         )
+    
+    # cotracker = torch.hub.load("facebookresearch/co-tracker", "cotracker3_offline").to(torch.device("cuda"))
+    # pred_tracks, pred_visibility = cotracker(video_chunk ,queries=queries[None])
+    
+    
     del reader
 
 

@@ -8,18 +8,18 @@ import pathlib
 
 @dataclass
 class CornerPrediction:
+    # box format is [x1, y1, x2, y2]
     boxes: List
     scores: List
 
 class CornerDetector():
     MODELS = {"FasterRCNN", "YoloV11"}
     
-    def __init__(self, model="FasterRCNN"):
+    def __init__(self, device, model="FasterRCNN"):
         if model not in CornerDetector.MODELS:
             raise ValueError(f"Invalid model selected. Allowed model types are: {', '.join(CornerDetector.MODELS)}")
         
-        self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        print(f"CornerDetector using device {self.device}")
+        self.device = device
         
         try:
             current_file_path = pathlib.Path(__file__).resolve()
@@ -66,7 +66,9 @@ class CornerDetector():
         
         if self.current_prediction.boxes is not None and len(self.current_prediction.boxes) != 0:
             for i, box in enumerate(self.current_prediction.boxes):
-                x1, y1, x2, y2 = [int(coord) for coord in box]
+                x1, y1, x2, y2 = [round(coord) for coord in box]
+                
+                cv2.circle(img_bgr, ((x1 + x2) // 2, (y1 + y2) // 2), 3, (0, 0, 255))
                 cv2.rectangle(img_bgr, (x1, y1), (x2, y2), (0, 0, 255), 2)  # Red
                 if self.current_prediction.scores is not None and len(self.current_prediction.scores) != 0:
                     cv2.putText(img_bgr, f"{self.current_prediction.scores[i]:.2f}", (x1, y1 - 10),
