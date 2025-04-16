@@ -6,12 +6,235 @@ from typing import Dict, List
 import copy
 from k_means_constrained import KMeansConstrained
 import time
+import cv2
+import itertools # For efficient pair generation
+import math
 
 @dataclass
 class CornerObservation:
     corner_id: int # corner id
     gate_id: int # gate id
-    point_2d: List # (x,y) point this landmark was seen
+    point_2d: np.ndarray # (x,y) point this landmark was seen
+    depth: int
+
+def line_intersection(line1, line2):
+    """
+    Finds the intersection point of two lines given in the form (x1, y1, x2, y2).
+    Returns (x, y) intersection point or None if lines are parallel or coincident.
+    """
+    x1, y1, x2, y2 = line1
+    x3, y3, x4, y4 = line2
+
+    # Calculate determinant
+    denominator = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+
+    # Check if lines are parallel (denominator is zero or very close to it)
+    if abs(denominator) < 1e-6: # Use a small epsilon for floating point comparison
+        return None
+
+    # Calculate intersection point using Cramer's rule or similar method
+    t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denominator
+    u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denominator
+
+    # Calculate intersection coordinates
+    intersect_x = x1 + t * (x2 - x1)
+    intersect_y = y1 + t * (y2 - y1)
+
+    return (intersect_x, intersect_y)
+
+def find_target_points_in_bboxes(img, bboxes, rgb_img):
+    """
+    Finds the intersection of Hough lines closest to the center within each
+    specified bounding box.
+
+    Args:
+        image_path (str): Path to the input image file.
+        bboxes (list): A list of bounding box tuples, where each tuple is in
+                       (x1, y1, x2, y2) format (top-left, bottom-right corner).
+
+    Returns:
+        list: A list of closest intersection points found. Each element
+              corresponds to a bbox in the input list. Contains (x, y) tuples
+              or None if no intersection was found for that bbox.
+        np.ndarray: The original image with all processed bounding boxes and
+                    found intersection points drawn on it. Returns None for the
+                    image if image loading fails.
+    """
+    # output_img = img.copy() # Create a single copy for drawing all results
+    output_img = rgb_img.copy()
+    
+    img_h, img_w = img.shape[:2]
+    all_closest_points = [] # To store results for each bbox
+    target_points = []
+    
+    # --- Iterate through each bounding box ---
+    for i, bbox in enumerate(bboxes):
+        # print(f"\n--- Processing Bbox {i+1}: {bbox} ---")
+        closest_intersection_for_this_bbox = None
+        min_distance_for_this_bbox = float('inf')
+        # *** NEW: Set to store unique lines involved in ANY intersection in this bbox ***
+        intersecting_lines_to_draw_this_bbox = set()
+
+        # --- 2. Define Bbox (x1, y1, x2, y2) and Extract ROI ---
+        # (Validation and ROI extraction logic remains the same as previous version)
+        try:
+            x1, y1, x2, y2 = map(int, bbox)
+            bbox_h = y2 - y1
+            bbox_w = x2 - x1
+            
+            x1 -= int(bbox_w * 0.1)
+            x2 += int(bbox_w * 0.1)
+            
+            y1 -= int(bbox_h * 0.1)
+            y2 += int(bbox_h * 0.1)
+            
+        except (ValueError, TypeError):
+            print(f"Error: Invalid bbox format for {bbox}. Skipping.")
+            all_closest_points.append(None)
+            continue
+        if x1 >= x2 or y1 >= y2:
+            print(f"Error: Invalid bounding box coordinates (x1>=x2 or y1>=y2) in {bbox}. Skipping.")
+            cv2.rectangle(output_img, (x1, y1), (x2, y2), (0, 0, 255), 1)
+            all_closest_points.append(None)
+            continue
+        roi_offset_x, roi_offset_y = x1, y1
+        x1_clamp = max(0, x1); y1_clamp = max(0, y1)
+        x2_clamp = min(img_w, x2); y2_clamp = min(img_h, y2)
+        if x1_clamp >= x2_clamp or y1_clamp >= y2_clamp:
+             print(f"Error: Bounding box {bbox} is entirely outside image dimensions. Skipping.")
+             cv2.rectangle(output_img, (x1, y1), (x2, y2), (0, 0, 255), 1)
+             all_closest_points.append(None)
+             continue
+        elif x1 != x1_clamp or y1 != y1_clamp or x2 != x2_clamp or y2 != y2_clamp:
+             print(f"Warning: Bbox {bbox} partially outside image. Clamping ROI to ({x1_clamp},{y1_clamp},{x2_clamp},{y2_clamp}).")
+             roi_offset_x, roi_offset_y = x1_clamp, y1_clamp
+        roi = img[y1_clamp:y2_clamp, x1_clamp:x2_clamp]
+        if roi.size == 0:
+            print("Error: ROI extracted is empty. Skipping.")
+            cv2.rectangle(output_img, (x1, y1), (x2, y2), (0, 0, 255), 1)
+            all_closest_points.append(None)
+            continue
+
+        # Draw the (original) valid bbox outline
+        cv2.rectangle(output_img, (x1, y1), (x2, y2), (0, 255, 0), 2) # Green valid bbox
+
+        # --- 3. Preprocessing within ROI ---
+        # (Preprocessing logic remains the same)
+        # gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # blurred_roi = cv2.GaussianBlur(gray_roi, (3, 3), sigmaX=1, sigmaY=1)
+        median_blurred_roi = cv2.medianBlur(roi, 3) 
+        gaussian_blurred_roi = cv2.GaussianBlur(median_blurred_roi, (3, 3), sigmaX=1, sigmaY=1)
+        
+        # threshold the image
+        min_val = np.min(gaussian_blurred_roi)
+        threshold = 1
+        lower_bound = max(0, min_val - threshold) 
+        upper_bound = min_val + threshold
+        thresholded_roi = np.where((gaussian_blurred_roi >= lower_bound) & (gaussian_blurred_roi <= upper_bound), gaussian_blurred_roi, 0)
+        thresholded_roi = np.where(thresholded_roi == 0, thresholded_roi, 255).astype(np.uint8)
+        
+        # apply canny
+        edges_roi = cv2.Canny(thresholded_roi, 50, 150, apertureSize=3)
+        # Visualization
+        # MIN_DEPTH_METERS = 0
+        # MAX_DEPTH_METERS = 100
+        
+        # gaussian_blurred_roi_vis = 255 - np.interp(gaussian_blurred_roi, (MIN_DEPTH_METERS, MAX_DEPTH_METERS), (0, 255)).astype(np.uint8)
+        # cv2.imshow("thresholded_edges", thresholded_roi)
+        # cv2.imshow("before thresholding", gaussian_blurred_roi_vis)
+        # cv2.imshow("edges image", edges_roi)
+        # cv2.waitKey(0)
+        
+        # --- 4. Hough Line Transform within ROI ---
+        # (HoughLinesP call remains the same)
+        height, width = y2 - y1, x2 - x1
+        lines = cv2.HoughLinesP(edges_roi, rho=1, theta=np.pi / 180, threshold=10, minLineLength=min(int(height*0.1), int(width*0.1)), maxLineGap=10)
+
+        if lines is None:
+            print(f"No lines detected within bbox {i+1}.")
+            all_closest_points.append(None)
+            continue
+
+        # --- 5. Find Intersections and Closest Point (within this bbox) ---
+        bbox_center_x = (x1 + x2) / 2.0
+        bbox_center_y = (y1 + y2) / 2.0
+        intersections_found_in_bbox = False # Flag to track if any intersection occurred
+        intersection_pts = []
+        
+        for line1_data, line2_data in itertools.combinations(lines, 2):
+            x1a_roi, y1a_roi, x2a_roi, y2a_roi = line1_data[0]
+            x1b_roi, y1b_roi, x2b_roi, y2b_roi = line2_data[0]
+
+            line1_global = (x1a_roi + roi_offset_x, y1a_roi + roi_offset_y, x2a_roi + roi_offset_x, y2a_roi + roi_offset_y)
+            line2_global = (x1b_roi + roi_offset_x, y1b_roi + roi_offset_y, x2b_roi + roi_offset_x, y2b_roi + roi_offset_y)
+
+            intersection_pt = line_intersection(line1_global, line2_global)
+
+            if intersection_pt:
+                ix, iy = intersection_pt
+                epsilon = 1e-6
+                # Check if intersection point is strictly inside the *original* bbox
+                if (x1 + epsilon <= ix < x2 - epsilon and
+                    y1 + epsilon <= iy < y2 - epsilon):
+
+                    intersections_found_in_bbox = True # Mark that at least one intersection was found
+
+                    # *** Add BOTH lines to the set for drawing ***
+                    # Convert to tuple of ints for hashing/set storage
+                    line1_tuple = tuple(map(int, line1_global))
+                    line2_tuple = tuple(map(int, line2_global))
+                    intersecting_lines_to_draw_this_bbox.add(line1_tuple)
+                    intersecting_lines_to_draw_this_bbox.add(line2_tuple)
+
+                    # --- Still track the closest intersection point ---
+                    intersection_pts.append([ix, iy])
+                    distance = math.hypot(ix - bbox_center_x, iy - bbox_center_y)
+                    if distance < min_distance_for_this_bbox:
+                        min_distance_for_this_bbox = distance
+                        closest_intersection_for_this_bbox = (ix, iy)
+
+        # --- Store result (closest point) for this bbox ---
+        all_closest_points.append(closest_intersection_for_this_bbox)
+
+        # --- Draw results for this bbox ---
+        # *** Draw ALL unique lines involved in ANY intersection within this bbox ***
+        if intersecting_lines_to_draw_this_bbox:
+        #     print(f"Bbox {i+1}: Found {len(intersecting_lines_to_draw_this_bbox)} unique line segments involved in intersections.")
+            line_color = (255, 0, 0) # Blue for intersecting lines (BGR)
+            for line_segment in intersecting_lines_to_draw_this_bbox:
+                lx1, ly1, lx2, ly2 = line_segment
+                cv2.line(output_img, (lx1, ly1), (lx2, ly2), line_color, 1)
+        # # else: # This case can happen if lines were detected but none intersected within the box
+        # #    print(f"Bbox {i+1}: Lines detected but no intersections found within the box.")
+
+        
+        
+        # if len(intersection_pts) == 4:
+        #     target_pt = np.mean(np.array(intersection_pts), axis=0).astype(np.uint32)
+        #     target_points.append(target_pt)
+            
+        #     # Visualization
+        #     cv2.circle(output_img, (target_pt[0], target_pt[1]), 2, (0, 255, 0), -1) # Red filled circle for closest point
+        #     for pt in intersection_pts:
+        #         cv2.circle(output_img, (int(pt[0]), int(pt[1])), 2, (0, 0, 255), -1) # Red filled circle for closest point
+        # # *** Draw the closest intersection point (if any intersection occurred) ***
+        if closest_intersection_for_this_bbox:
+            # We already know an intersection happened if this is not None
+            # print(f"Closest intersection for bbox {i+1} found at: {closest_intersection_for_this_bbox}")
+            ix_int, iy_int = map(int, map(round, closest_intersection_for_this_bbox))
+            cv2.circle(output_img, (int(bbox_center_x), int(bbox_center_y)), 2, (255, 0, 0), -1)
+            cv2.circle(output_img, (ix_int, iy_int), 2, (0, 0, 255), -1) # Red filled circle for closest point
+        # elif intersections_found_in_bbox:
+        #      # This case should be rare: intersections occurred, but calculation failed for closest?
+        #      print(f"Warning: Intersections found in bbox {i+1}, but failed to determine closest point.")
+        # elif not intersecting_lines_to_draw_this_bbox and lines is not None:
+        #      print(f"Bbox {i+1}: Lines detected but no intersections found strictly within the box.")
+        # If lines was None initially, that case was handled earlier.
+
+        # --- End of loop for one bbox ---
+
+        # find weighted centroid of lines
+    return target_points, output_img
 
 class FrontEnd:
     def __init__(self):
@@ -21,12 +244,30 @@ class FrontEnd:
         self.prev_rgb_image: np.ndarray = None
         
         self.device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
-        
         print(f"FrontEnd using device {self.device}")
+        
+        self.gate_idx = 0
+        
+        fx = 472.0
+        fy = 472.0
+        cx = 472.0
+        cy = 240.0
+        self.intrinsic = np.array([
+            [fx, 0, cx],
+            [0, fy, cy],
+            [0,  0,   1]
+        ],dtype=np.float32)
         
         # Load tracking and detection models
         self.cotracker = torch.hub.load("facebookresearch/co-tracker", "cotracker3_offline").to(self.device)
         self.corner_detector: CornerDetector = CornerDetector(device=self.device)
+
+    def backproject(self, point: np.ndarray, depth) -> np.ndarray:
+        homogenous_point = np.array([[point[0]], [point[1]], [1]], dtype=np.float32)
+        direction = np.linalg.inv(self.intrinsic) @ homogenous_point
+        
+        return ((direction / np.linalg.norm(direction)) * depth).squeeze()
+        
 
     def extract_bbox_centroid(bbox):
         x1, y1, x2, y2 = [round(coord) for coord in bbox]
@@ -34,32 +275,36 @@ class FrontEnd:
         return ((x1 + x2) // 2 , ((y1 + y2) // 2))
     
     def _prune_corner_prediction(self, corner_prediction: CornerPrediction):
-        if (corner_prediction.boxes):
-            return
         # Convert points to NumPy array for easier comparison if not already
-        points_arr = np.asarray([corner_observation.point_2d for corner_observation in self.curr_corners_tracked])
+        points_arr = np.asarray([corner_observation.point_2d.astype(np.uint32) for corner_observation in self.curr_corners_tracked])
 
         # True/False array indicating which bboxes in the corner_prediction do not contain any tracked points
         # True if bbox doesn't contain any tracked points
         # False if bbox does contain a tracked point
-        results = []
-        for bbox in corner_prediction.boxes:
+        pruned_boxes = []
+        pruned_scores = []
+        
+        for score, bbox in zip(corner_prediction.scores,corner_prediction.boxes):
             xmin, ymin, xmax, ymax = bbox
-            contains_no_tracked_points = True
+            contains_tracked_point = False
 
             # Check each point efficiently
             for point in points_arr:
                 px, py = point
                 # Check if the point's coordinates are within the bbox boundaries (inclusive)
                 if xmin <= px <= xmax and ymin <= py <= ymax:
-                    contains_no_tracked_points = False
+                    contains_tracked_point = True
                     break # Found a point in this bbox, no need to check other points
 
-            results.append(contains_no_tracked_points)
+            if not contains_tracked_point:
+                pruned_boxes.append(bbox)
+                pruned_scores.append(score)
 
-        return results
+        corner_prediction.boxes = pruned_boxes
+        corner_prediction.scores = pruned_scores
         
     def _update_curr_corners_tracked(self, curr_rgb_image: np.ndarray):
+        
         queries = torch.tensor([[0. , float(corner.point_2d[0]), float(corner.point_2d[1])] for corner in self.curr_corners_tracked])
         if self.device.type == "cuda":
             queries = queries.cuda()
@@ -74,11 +319,14 @@ class FrontEnd:
             [None]                                    # Shape becomes (1, 2, C, H, W)
         )
 
+        start_time = time.time()
         pred_tracks, pred_visibility = self.cotracker(video_chunk ,queries=queries[None])
+        end_time = time.time()
+        print(f"Cotracker Inference Time {(end_time - start_time)* 1000}ms")
     
         # update visible corners with new track points
         visibility_mask = pred_visibility[0][-1][:].tolist()
-        pred_tracks = pred_tracks[0][-1][:].tolist()
+        pred_tracks = np.round(pred_tracks[0][-1][:].cpu().numpy())
         
         updated_curr_corners_tracked: List[CornerObservation] = []
         for i in range(len(visibility_mask)):
@@ -90,10 +338,12 @@ class FrontEnd:
                 
         self.curr_corners_tracked = updated_curr_corners_tracked
     
-    def process_image(self, curr_rgb_image: np.ndarray, curr_depth_image: np.ndarray):            
+    def process_image(self, curr_rgb_image: np.ndarray, curr_depth_image: np.ndarray):     
+        
+        start_time = time.time()       
         # run cotracking if possible
-        if self.prev_rgb_image is not None and len(self.curr_corners_tracked) != 0:
-            self._update_curr_corners_tracked(curr_rgb_image)
+        # if self.prev_rgb_image is not None and len(self.curr_corners_tracked) != 0:
+        #     self._update_curr_corners_tracked(curr_rgb_image)
         
         # get current corner prediction from the image
         corner_prediction: CornerPrediction = self.corner_detector.createPrediction(curr_rgb_image)
@@ -101,13 +351,76 @@ class FrontEnd:
         # add new corner observations from the predictions if new gate(s) seen
         if len(corner_prediction.boxes) >= 4:
             # prune detections (remove bboxes that contain current tracks)
-            self._prune_corner_prediction(corner_prediction)
+            # if (len(self.curr_corners_tracked) > 0):
+            #     self._prune_corner_prediction(corner_prediction)
             
             if len(corner_prediction.boxes) >= 4:
-                return
-                # with remaining detections check for gates (4 bboxes) and add their points to the current corners being tracked
+                # extract refined 2D points from corners and backproject to 3D                
+                # detection_img = self.corner_detector.getCurrentVisualization()
+                # cv2.imshow("detection_img", detection_img)
+                target_points_2d, hough_viz_img = find_target_points_in_bboxes(curr_depth_image, corner_prediction.boxes, curr_rgb_image)
+                
+                depths = np.array([curr_depth_image[tuple(pt.tolist()[::-1])] for pt in target_points_2d])
+                target_points_3d = np.array([self.backproject(target_point_2d, depth) for target_point_2d, depth in zip(target_points_2d, depths)])
+                               
+                if len(target_points_2d) >= 4:
+                    # take the closest 4 points if we have more detections
+                    if len(target_points_2d) > 4:                        
+                        closest_indices = np.argsort(depths)[:4]
+                        depths = depths[closest_indices]
+                        target_points_3d = target_points_3d[closest_indices]
+                        target_points_2d = target_points_2d[closest_indices]
 
+                    # apply kmeans-clustering
+                    # clf = KMeansConstrained(
+                    #     n_clusters=len(target_points_3d) % 4 + 1,
+                    #     size_min=,
+                    #     size_max=4,
+                    #     random_state=0
+                    # )
+                    
+                    target_points_2d = np.array(target_points_2d)
+                    # geometric verification and registration
+                    point0 = target_points_3d[0]
+                    
+                    distances = np.linalg.norm(target_points_3d[-3:] - point0, axis=1)
+                    tolerance = 0.1
+                    measured_edge_dist = np.min(distances)
+                    measured_hypot_dist = np.max(distances)
+                    
+                    adjacent_corner_indices = np.array((distances >= measured_edge_dist - tolerance) & (distances <= measured_edge_dist + tolerance))
+                    adjacent_corner_dists = distances[adjacent_corner_indices]
+                    
+                    if adjacent_corner_dists.shape[0] == 2:
+                        measured_edge_dist = np.mean(adjacent_corner_dists, axis=0)
+                        hypot_check = (measured_hypot_dist >= measured_edge_dist * np.sqrt(2) - tolerance) & (measured_hypot_dist <= measured_edge_dist * np.sqrt(2) + tolerance)
+                        
+                        if hypot_check:
+                            # create a new gate and add it's corners
+                            verified_corners_2d = target_points_2d[-3:][adjacent_corner_indices]
+                            hypot_corner_2d = target_points_2d[-3:][~adjacent_corner_indices].squeeze()
+                            hypot_corner_dist = distances[~adjacent_corner_indices]
+                            
+                            # self.curr_corners_tracked.append(CornerObservation(0, self.gate_idx, target_points_2d[0], depths[0]))
+                            # self.curr_corners_tracked.append(CornerObservation(1, self.gate_idx, verified_corners_2d[0], adjacent_corner_dists[0]))
+                            # self.curr_corners_tracked.append(CornerObservation(2, self.gate_idx, hypot_corner_2d, hypot_corner_dist))
+                            # self.curr_corners_tracked.append(CornerObservation(3, self.gate_idx, verified_corners_2d[1], adjacent_corner_dists[1]))
+                            
+                            self.gate_idx += 1
+                            
+                
+                # print(f"Hough Processing Time: {(end_time - start_time) * 1000}")
+                cv2.imshow("hough_viz_img", hough_viz_img)
+                cv2.waitKey(1)
+                # with remaining detections check for gates (4 bboxes) and add their points to the current corners being tracked
+        end_time = time.time()
         
+        print(f"Total Computation Time : {(end_time - start_time)*1000}ms\n")
+        visualization_img = np.copy(curr_rgb_image)
+        for corner_obs in self.curr_corners_tracked:
+            cv2.circle(visualization_img, corner_obs.point_2d.astype(np.uint32), 2, (0,0,255), -1)
+        # cv2.imshow("vis image", visualization_img)
+        # cv2.waitKey(1)
         # construct and return keyframe info with current tracked points 
         self.prev_rgb_image = curr_rgb_image
 

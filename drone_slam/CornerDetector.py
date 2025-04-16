@@ -1,3 +1,4 @@
+import time
 import torch
 import cv2
 import numpy as np
@@ -39,7 +40,12 @@ class CornerDetector():
     @torch.no_grad()
     def createPrediction(self, image_rgb: np.ndarray):
         img_tensor = transforms.ToTensor()(image_rgb).to(self.device)
+        
+        start = time.time()
         predictions = self.model([img_tensor])
+        end = time.time()
+        
+        print(f"Inference Time: {(end - start) * 1000} ms")
         
         # Move results to CPU and convert to lists for visualization
         predictions = [{k: v.cpu().numpy() for k, v in p.items()} for p in predictions]
@@ -56,7 +62,9 @@ class CornerDetector():
             for idx in selected_indices:
                 filtered_pred_boxes.append(pred_boxes[idx])
                 filtered_pred_scores.append(pred_scores[idx])
-
+        
+        filtered_pred_boxes = [[int(coord) for coord in box] for box in filtered_pred_boxes]
+        
         self.current_img_rgb = image_rgb
         self.current_prediction = CornerPrediction(filtered_pred_boxes, filtered_pred_scores)
         return CornerPrediction(filtered_pred_boxes, filtered_pred_scores)
