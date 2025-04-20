@@ -140,7 +140,7 @@ def main():
             # apply correction factor to y
             rot = key_frame_pose_gtsam.rotation()
             translation = key_frame_pose_gtsam.translation()
-            translation[1] = translation[1] * 0.1
+            translation[1] = translation[1]
             key_frame_pose_gtsam = gtsam.Pose3(rot, translation)
             
             key_frame_poses_gtsam.append(key_frame_pose_gtsam)
