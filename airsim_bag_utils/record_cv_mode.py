@@ -6,12 +6,14 @@ from geometry_msgs.msg import PoseStamped, Pose # Import Pose
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 
+
 import rosbag2_py
 import time
 import cv2 # Not used in this snippet, can remove if not needed elsewhere
 import cosysairsim as airsim
 import time # Imported twice, remove one
 import numpy as np # Keep for potential future use or other parts
+import pickle
 from cv_bridge import CvBridge, CvBridgeError  # Not used here
 
 # Topic to read from
@@ -25,7 +27,8 @@ FC_IMG_DEPTHVIS_TOPIC = "/airsim_node/Drone1/front_center/depthvis"
 FR_IMG_MONO_TOPIC = "/airsim_node/Drone1/front_right/mono"
 ODOM_LOCAL_PATH_TOPIC = "/airsim_node/Drone1/odom_local_path"
 
-IMAGE_CAPTURE_FREQ = 24 # in HZ how many times image is captured per second
+SECONDS_OFFSET = 5
+IMAGE_CAPTURE_FREQ = 24 # in HZ how many times image is captured per second, modified to 24 which actually does 20 due to some error
 VISUALIZE = False
 
 # Constants for visualization
@@ -169,17 +172,32 @@ def main():
     print("Connected to AirSim.")
     client.enableApiControl(True, "cv") # Ensure API control is enabled if needed
     client.armDisarm(True, "cv") # Arm if necessary for pose setting to stick sometimes
-
+    client.simSetDetectionFilterRadius("front_center", airsim.ImageType.Scene, 20 * 100, vehicle_name="cv")
+    client.simAddDetectionFilterMeshName("front_center", airsim.ImageType.Scene, "Cylinder*", vehicle_name="cv")
+    print("Added detection filter")
+    
+    known_object_detections = []
+    
+    
+    num_odom_local = 0
     last_capture_time_stamp = None # units is nanoseconds
+    first_timestamp = None
+    
     cumulative_path = Path()
     while reader.has_next():
         (topic, data, timestamp) = reader.read_next() # timestamp is in nanoseconds
+        if first_timestamp == None:
+            first_timestamp = timestamp
         
+        if timestamp <= SECONDS_OFFSET * 1e9 + first_timestamp:
+            continue
+                 
         # Copy over every message in old ROSBAG
         writer.write(topic, data, timestamp)
         
         if topic == ODOM_LOCAL_TOPIC:
             try:
+                num_odom_local += 1
                 msg_type = get_msg_type_from_name(topic)
                 if msg_type is None:
                     print(f"Skipping message for topic {topic} due to message type issue.")
@@ -189,9 +207,12 @@ def main():
                 odom_local_pose: Pose = msg.pose.pose # Use Pose directly
                 
                 # Handles image capture frequency
-                if last_capture_time_stamp is None:
-                    last_capture_time_stamp = timestamp
-                if (timestamp - last_capture_time_stamp) <= ((1/IMAGE_CAPTURE_FREQ) * 1e9):
+                # if last_capture_time_stamp is None:
+                #     last_capture_time_stamp = timestamp
+                # if (timestamp - last_capture_time_stamp) <= ((1/IMAGE_CAPTURE_FREQ) * 1e9):
+                #     continue
+                
+                if num_odom_local % 5 != 0: # capture every 5 odom local messages so we get 20hz
                     continue
                 
                 # create path for visualizing the GT odom local pose
@@ -219,6 +240,8 @@ def main():
                 vehicle_pose_airsim = convert_ros2_to_airsim_pose(odom_local_pose)
                 client.simSetVehiclePose(vehicle_pose_airsim, True, "cv") # Use the correct vehicle name if not "cv"
 
+                
+                       
                 # Capture the images
                 img_responses = client.simGetImages(
                     [airsim.ImageRequest("front_center", airsim.ImageType.Scene, False, False),
@@ -257,12 +280,47 @@ def main():
                 writer.write(FC_IMG_DEPTHVIS_TOPIC, serialize_message(front_center_depth_vis_img_msg), timestamp)
                 writer.write(FR_IMG_MONO_TOPIC, serialize_message(front_right_mono_img_msg), timestamp)
                 
+                # Detect Test Cylinder GT objects                
+                cylinders = client.simGetDetections("front_center", airsim.ImageType.Scene, vehicle_name="cv")
+                height, width = front_center_image_rgb.shape[:2]
+                
+                detection_vis = front_center_image_rgb.copy()
+                cyl_names = []
+                detections_this_frame = []
+                for cylinder in cylinders:
+                    if cylinder.name in cyl_names:
+                        continue
+                    cyl_names.append(cylinder.name)
+                    bbox = [int(cylinder.box2D.min.x_val), int(cylinder.box2D.min.y_val), int(cylinder.box2D.max.x_val), int(cylinder.box2D.max.y_val)]
+
+                    if bbox[0] > 0 and bbox[2] < width - 1 and bbox[1] > 0 and bbox[3] < height - 1:
+                        
+                        object_trans = client.simGetObjectPose(cylinder.name).position.to_numpy_array()
+                        drone_trans = client.simGetVehiclePose(vehicle_name="cv").position.to_numpy_array()
+                        ranging_distance = np.linalg.norm(object_trans - drone_trans)
+                        
+                        cx = (bbox[0] + bbox[2]) // 2
+                        cy = (bbox[1] + bbox[3]) // 2
+                        
+                        current_detection = {}
+                        current_detection["ranging_distance"] = ranging_distance
+                        current_detection["point_2d"] = np.array([cx, cy])
+                        current_detection["obj_name"] = cylinder.name
+        
+                        detections_this_frame.append(current_detection)                        
+                        cv2.circle(detection_vis, (int(cx), int(cy)), 5, (0, 0, 255))
+                        cv2.rectangle(detection_vis,(bbox[0],bbox[1]),(bbox[2],bbox[3]),(255,0,0),2)
+                        cv2.putText(detection_vis, cylinder.name, (bbox[0],bbox[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (36,255,12))
+                
+                known_object_detections.append(detections_this_frame)         
+                    
                 if VISUALIZE:
-                    cv2.imshow("front_center_image_rgb", front_center_image_rgb)
-                    cv2.imshow("front_center_image_mono", front_center_image_mono)
-                    cv2.imshow("front_right_image_mono", front_right_image_mono)
+                    cv2.imshow("detection_vis", detection_vis)
+                    # cv2.imshow("front_center_image_rgb", front_center_image_rgb)
+                    # cv2.imshow("front_center_image_mono", front_center_image_mono)
+                    # cv2.imshow("front_right_image_mono", front_right_image_mono)
                     cv2.imshow("depth_vis", depth_vis)
-                    cv2.waitKey(0)
+                    cv2.waitKey(1)
                 # Add a small sleep to allow AirSim to process/render, otherwise it might be too fast
                 #time.sleep(0.01)
 
@@ -270,12 +328,15 @@ def main():
                 print(f"Error processing message for topic {topic}: {e}")
     del reader
 
+    # save known object detection information
+    print("Saving known object detections as a pickle file")
+    with open('known_object_detections.pickle', 'wb') as file:
+        pickle.dump(known_object_detections, file)
+
     print("Finished processing bag file.")
     # Optional: Disarm and disable API control if needed
     # client.armDisarm(False, "cv")
     # client.enableApiControl(False, "cv")
-
-    # No need to explicitly delete reader with 'with' statement or relying on garbage collection
 
 
 if __name__ == "__main__":
