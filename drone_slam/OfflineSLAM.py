@@ -13,7 +13,7 @@ from nav_msgs.msg import Odometry
 from CornerDetector import CornerDetector
 from FrontEnd import FrontEnd
 from BackEnd import BackEnd
-from drone_slam.drone_slam.VisualizationMetricsUtils import plot_graph_values
+from VisualizationMetricsUtils import plot_graph_calc_metrics
 import pathlib
 
 import gtsam
@@ -186,6 +186,7 @@ def main():
     i = 0
     for rgb_img, depth_img in zip(rgb_images, depth_images):
         front_end.process_image(rgb_img, depth_img)
+        i +=1
         if i == 2:
             # run backend
             curr_keyframe_pose = key_frame_poses_gtsam[keyframe_idx]
@@ -195,11 +196,10 @@ def main():
             keyframe_idx += 1
             
             i = 0
-        i +=1
 
     results = back_end.solveDogleg()
     
-    plot_graph_values(results, keyframe_idx, front_end.gate_idx, gt_positions, key_frame_positions, None)
+    plot_graph_calc_metrics(results, len(key_frame_poses_gtsam), front_end.gate_idx, gt_positions, key_frame_positions, None)
 
 if __name__ == "__main__":
     main()
