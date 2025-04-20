@@ -176,11 +176,6 @@ def find_target_points_in_bboxes(img, bboxes, rgb_img):
         # apply canny
         edges_roi = cv2.Canny(thresholded_roi, 50, 150, apertureSize=3)
         
-        # dilate canny
-        dilation_kernel_size = (2, 2)
-        dilation_iterations = 1 # How many times to apply dilation
-
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, dilation_kernel_size)
         # Visualization
         # MIN_DEPTH_METERS = 0
         # MAX_DEPTH_METERS = 100
@@ -391,12 +386,10 @@ class FrontEnd:
         return ((x1 + x2) // 2 , ((y1 + y2) // 2))
     
     def process_image(self, curr_rgb_image: np.ndarray, curr_depth_image: np.ndarray):     
+        self.curr_rgb_image = curr_rgb_image
         
         start_time = time.time()       
-        # run cotracking if possible
-        # if self.prev_rgb_image is not None and len(self.curr_corners_tracked) != 0:
-        #     self._update_curr_corners_tracked(curr_rgb_image)
-        visualization_img = np.copy(curr_rgb_image)
+        frontend_vis_img = np.copy(curr_rgb_image)
         # get current corner prediction from the image
         corner_predictions: CornerPredictions = self.corner_detector.createPredictions(curr_rgb_image)
         # must add a new gate/set of corners to track
@@ -474,13 +467,15 @@ class FrontEnd:
                         self.curr_corners_tracked.append(CornerObservation(2, self.gate_idx,        hypot_corner_2d,                depths[2], track_ids[2]))
                         self.curr_corners_tracked.append(CornerObservation(3, self.gate_idx, verified_corners_2d[1],                depths[3], track_ids[3]))
                         
+                        for point, depth in zip([target_points_2d[0], verified_corners_2d[0], hypot_corner_2d, verified_corners_2d[1]], depths):
+                            put_text_above_point(frontend_vis_img, str(depth), point, color=(255,255,255))
                         
                         self.gate_idx += 1
                     
         
                 # print(f"Hough Processing Time: {(end_time - start_time) * 1000}")
                 # cv2.imshow("hough_viz_img", hough_viz_img)
-                # cv2.waitKey(1)
+                # cv2.waitKey(0)
                 # with remaining detections check for gates (4 bboxes) and add their points to the current corners being tracked
         elif len(self.curr_corners_tracked) > 0:
             # track the current corners
@@ -495,12 +490,13 @@ class FrontEnd:
                 for tracking_result in tracking_results:
                     if tracking_result[4] == tracked_corner.tracking_id:
                         resulting_bbox = tracking_result[:4]
-                        target_points_2d, hough_viz_img = find_target_points_in_bboxes(curr_depth_image, [resulting_bbox.astype(np.int32)], visualization_img)
-                        visualization_img = hough_viz_img
+                        target_points_2d, hough_viz_img = find_target_points_in_bboxes(curr_depth_image, [resulting_bbox.astype(np.int32)], frontend_vis_img)
+                        frontend_vis_img = hough_viz_img
                         
                         potential_target_point = target_points_2d[0]
                         if potential_target_point is not None:
                             tracked_corner.depth = curr_depth_image[tuple(potential_target_point[::-1])]
+                            put_text_above_point(frontend_vis_img, str(tracked_corner.depth), potential_target_point, color=(255,255,255))
                             tracked_corner.point_2d = potential_target_point
                         else:
                             tracked_corner.depth = None
@@ -511,27 +507,27 @@ class FrontEnd:
             
             self.curr_corners_tracked = new_curr_corners_tracked
             
-        # cv2.imshow("visualization image", visualization_img)
-            # cv2.waitKey(0)
+        # cv2.imshow("frontend_vis_img", frontend_vis_img)
+        # cv2.waitKey(0)
         end_time = time.time()
         
         print(f"Total Computation Time : {(end_time - start_time)*1000}ms\n")
-        visualization_img2 = np.copy(curr_rgb_image)
-        self.tracker.plot_results(visualization_img2, show_trajectories=False)
+        tracker_vis_img = np.copy(curr_rgb_image)
+        self.tracker.plot_results(tracker_vis_img, show_trajectories=False)
 
-        detection_img = self.corner_detector.getCurrentVisualization()
-        # cv2.imshow("detection_img", detection_img)
+        frcnn_output_img = self.corner_detector.getCurrentVisualization()
+        # cv2.imshow("frcnn_output_img", frcnn_output_img)
 
         for corner_obs in self.curr_corners_tracked:
             if corner_obs.depth is not None:
-                put_text_above_point(visualization_img2, text=str(corner_obs.gate_id), point=corner_obs.point_2d.astype(np.uint32))
-                cv2.circle(visualization_img2, corner_obs.point_2d.astype(np.uint32), 4, (255,0,0), -1)
+                # Place ID of image
+                put_text_above_point(tracker_vis_img, text=str(corner_obs.gate_id), point=corner_obs.point_2d.astype(np.uint32))
+                cv2.circle(tracker_vis_img, corner_obs.point_2d.astype(np.uint32), 4, (255,0,0), -1)
 
-        # cv2.imshow("vis image2", visualization_img2)
+        # cv2.imshow("tracker_vis_img", tracker_vis_img)
         # cv2.waitKey(1)
         # construct and return keyframe info with current tracked points 
         self.prev_rgb_image = curr_rgb_image
-
 
     def getCornerObservations(self):
         return self.curr_corners_tracked
