@@ -13,11 +13,13 @@ from nav_msgs.msg import Odometry
 from CornerDetector import CornerDetector
 from FrontEnd import FrontEnd
 from BackEnd import BackEnd
-from VisualizationUtils import plot_graph_values
+from drone_slam.drone_slam.VisualizationMetricsUtils import plot_graph_values
+import pathlib
 
 import gtsam
 import torch
 import numpy as np
+import pickle
 
 RGB_IMAGE_TOPIC = "/airsim_node/Drone1/front_center/rgb"
 DEPTH_IMAGE_TOPIC = "/airsim_node/Drone1/front_center/depth"
@@ -93,14 +95,17 @@ def main():
     
     depth_images = []
     rgb_images = []
+    
     key_frame_poses_gtsam = []
-    gt_positions = []
     key_frame_positions = []
+    
+    gt_positions = []
+    latest_odom_local_msg = None
+    latest_gt_position = None
     
     curr_rgb = None
     curr_depth = None
     
-    processed = False
     i = 0
     while reader.has_next():
         topic, data, timestamp = reader.read_next()
@@ -123,11 +128,7 @@ def main():
             except CvBridgeError as e:
                 print(e)
                 continue  # Skip to the next message if conversion fails
-            #corner_detector.createPrediction(cv_image)
-            #visualization_img = corner_detector.getCurrentVisualization()
             
-            # Now you have the image in OpenCV format (cv_image)
-            # You can display it, process it, save it, etc.
             print(f"Received RGB image at timestamp: {timestamp * 1e-9}")
         
         if topic == KEYFRAME_POSE_TOPIC:
@@ -136,23 +137,17 @@ def main():
             print(topic, timestamp * 1e-9)
             num_keyframe_poses += 1
             key_frame_pose_gtsam = odometry_to_gtsam_pose3(msg)
-            
-            # apply correction factor to y
-            rot = key_frame_pose_gtsam.rotation()
-            translation = key_frame_pose_gtsam.translation()
-            translation[1] = translation[1]
-            key_frame_pose_gtsam = gtsam.Pose3(rot, translation)
+            # key_frame_pose_gtsam = odometry_to_gtsam_pose3(latest_odom_local_msg)
             
             key_frame_poses_gtsam.append(key_frame_pose_gtsam)
-            
             key_frame_positions.append(key_frame_pose_gtsam.translation())
+            gt_positions.append(latest_gt_position)
         
         if topic == ODOM_LOCAL_TOPIC:
             msg_type = get_message(typename(topic))
             msg = deserialize_message(data, msg_type)
-            gt_translation = odometry_to_gtsam_pose3(msg).translation()
-            gt_positions.append(gt_translation)
-            
+            latest_gt_position = odometry_to_gtsam_pose3(msg).translation()
+            latest_odom_local_msg = msg
         
         if topic == DEPTH_IMAGE_TOPIC:
             num_depth += 1
@@ -175,6 +170,18 @@ def main():
     
     back_end = BackEnd()
     
+    # truncate rgb_images and depth_images so that they match with the keyframe_pose outputs
+    # keyframe_pose topic will not output if there is no movement!
+    offset = len(rgb_images) - len(key_frame_poses_gtsam) * 2
+    rgb_images = rgb_images[offset:]
+    depth_images = depth_images[offset:]
+    
+    current_file_path = pathlib.Path(__file__).resolve()
+    known_object_detections = None
+    with open(current_file_path.parent.parent / "resource/known_object_detections.pickle", 'rb') as file:
+        known_object_detections = pickle.load(file)
+    known_object_detections = known_object_detections[offset:]
+    
     keyframe_idx = 0
     i = 0
     for rgb_img, depth_img in zip(rgb_images, depth_images):
@@ -182,7 +189,9 @@ def main():
         if i == 2:
             # run backend
             curr_keyframe_pose = key_frame_poses_gtsam[keyframe_idx]
-            back_end.process_key_frame(curr_keyframe_pose, front_end.getCornerObservations())
+            observations = front_end.getCornerObservations()
+            
+            back_end.process_key_frame(curr_keyframe_pose, observations, known_object_detections[keyframe_idx])
             keyframe_idx += 1
             
             i = 0
@@ -191,7 +200,6 @@ def main():
     results = back_end.solveDogleg()
     
     plot_graph_values(results, keyframe_idx, front_end.gate_idx, gt_positions, key_frame_positions, None)
-    
 
 if __name__ == "__main__":
     main()
