@@ -10,6 +10,8 @@ import cv2
 import itertools # For efficient pair generation
 import math
 
+VIS_TARGETING_ROI = True
+VIS_FRONT_END = True
 @dataclass
 class CornerObservation:
     corner_id: int # corner id
@@ -95,7 +97,7 @@ def find_target_points_in_bboxes(img, bboxes, rgb_img):
                     image if image loading fails.
     """
     # output_img = img.copy() # Create a single copy for drawing all results
-    output_img = rgb_img.copy()
+    output_img_rgb = (rgb_img.copy())
     
     img_h, img_w = img.shape[:2]
     all_closest_points = [] # To store results for each bbox
@@ -134,7 +136,7 @@ def find_target_points_in_bboxes(img, bboxes, rgb_img):
         
         if x1 >= x2 or y1 >= y2:
             print(f"Error: Invalid bounding box coordinates (x1>=x2 or y1>=y2) in {bbox}. Skipping.")
-            cv2.rectangle(output_img, (x1, y1), (x2, y2), (0, 0, 255), 1)
+            cv2.rectangle(output_img_rgb, (x1, y1), (x2, y2), (0, 0, 255), 1)
             all_closest_points.append(None)
             continue
         roi_offset_x, roi_offset_y = x1, y1
@@ -142,22 +144,22 @@ def find_target_points_in_bboxes(img, bboxes, rgb_img):
         x2_clamp = min(img_w, x2); y2_clamp = min(img_h, y2)
         if x1_clamp >= x2_clamp or y1_clamp >= y2_clamp:
              print(f"Error: Bounding box {bbox} is entirely outside image dimensions. Skipping.")
-             cv2.rectangle(output_img, (x1, y1), (x2, y2), (0, 0, 255), 1)
+             cv2.rectangle(output_img_rgb, (x1, y1), (x2, y2), (0, 0, 255), 1)
              all_closest_points.append(None)
              continue
         elif x1 != x1_clamp or y1 != y1_clamp or x2 != x2_clamp or y2 != y2_clamp:
              print(f"Warning: Bbox {bbox} partially outside image. Clamping ROI to ({x1_clamp},{y1_clamp},{x2_clamp},{y2_clamp}).")
              roi_offset_x, roi_offset_y = x1_clamp, y1_clamp
         roi = img[y1_clamp:y2_clamp, x1_clamp:x2_clamp]
+        roi_rgb_vis = rgb_img[y1_clamp:y2_clamp, x1_clamp:x2_clamp]
+        
         if roi.size == 0:
             print("Error: ROI extracted is empty. Skipping.")
-            cv2.rectangle(output_img, (x1, y1), (x2, y2), (0, 0, 255), 1)
+            cv2.rectangle(output_img_rgb, (x1, y1), (x2, y2), (0, 0, 255), 1)
             all_closest_points.append(None)
             continue
 
-        # Draw the (original) valid bbox outline
-        cv2.rectangle(output_img, (x1, y1), (x2, y2), (0, 255, 0), 2) # Green valid bbox
-
+        
         # --- 3. Preprocessing within ROI ---
         # (Preprocessing logic remains the same)
         # gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
@@ -184,8 +186,6 @@ def find_target_points_in_bboxes(img, bboxes, rgb_img):
 
         # cv2.imshow("thresholded_edges", thresholded_roi)
         # cv2.imshow("before thresholding", gaussian_blurred_roi_vis)
-        # cv2.imshow("edges image", edges_roi)
-        # cv2.waitKey(0)
         
         # --- 4. Hough Line Transform within ROI ---
         # (HoughLinesP call remains the same)
@@ -237,7 +237,9 @@ def find_target_points_in_bboxes(img, bboxes, rgb_img):
 
         # --- Store result (closest point) for this bbox ---
         all_closest_points.append(closest_intersection_for_this_bbox)
+        roi_annotated = output_img_rgb[y1_clamp:y2_clamp, x1_clamp:x2_clamp]
 
+        
         # --- Draw results for this bbox ---
         # *** Draw ALL unique lines involved in ANY intersection within this bbox ***
         if intersecting_lines_to_draw_this_bbox:
@@ -245,7 +247,7 @@ def find_target_points_in_bboxes(img, bboxes, rgb_img):
             line_color = (255, 0, 0) # Blue for intersecting lines (BGR)
             for line_segment in intersecting_lines_to_draw_this_bbox:
                 lx1, ly1, lx2, ly2 = line_segment
-                cv2.line(output_img, (lx1, ly1), (lx2, ly2), line_color, 1)
+                cv2.line(output_img_rgb, (lx1, ly1), (lx2, ly2), line_color, 1)
         # # else: # This case can happen if lines were detected but none intersected within the box
         # #    print(f"Bbox {i+1}: Lines detected but no intersections found within the box.")
 
@@ -268,8 +270,8 @@ def find_target_points_in_bboxes(img, bboxes, rgb_img):
             # We already know an intersection happened if this is not None
             # print(f"Closest intersection for bbox {i+1} found at: {closest_intersection_for_this_bbox}")
             ix_int, iy_int = map(int, map(round, closest_intersection_for_this_bbox))
-            cv2.circle(output_img, (int(bbox_center_x), int(bbox_center_y)), 2, (255, 0, 0), -1)
-            cv2.circle(output_img, (ix_int, iy_int), 2, (0, 0, 255), -1) # Red filled circle for closest point
+            cv2.circle(output_img_rgb, (int(bbox_center_x), int(bbox_center_y)), 2, (0, 0, 255), -1) # Blue circle for bbox center
+            cv2.circle(output_img_rgb, (ix_int, iy_int), 2, (255, 0, 0), -1) # Red filled circle for closest intersection point
         # elif intersections_found_in_bbox:
         #      # This case should be rare: intersections occurred, but calculation failed for closest?
         #      print(f"Warning: Intersections found in bbox {i+1}, but failed to determine closest point.")
@@ -279,8 +281,12 @@ def find_target_points_in_bboxes(img, bboxes, rgb_img):
 
         # --- End of loop for one bbox ---
 
-        # find weighted centroid of lines
-    return all_closest_points, output_img
+        if VIS_TARGETING_ROI:
+            cv2.imshow("RGB ROI", cv2.cvtColor(roi_rgb_vis, cv2.COLOR_RGB2BGR))
+            cv2.imshow("Edges ROI", edges_roi)
+            cv2.imshow("Hough Lines + Target Point ROI", cv2.cvtColor(roi_annotated, cv2.COLOR_RGB2BGR))
+            cv2.waitKey(0)
+    return all_closest_points, output_img_rgb
 
 def put_text_above_point(image, text, point, font_scale=0.4, color=(255, 255, 255), thickness=1, vertical_offset=10):
     """
@@ -389,7 +395,7 @@ class FrontEnd:
         self.curr_rgb_image = curr_rgb_image
         
         start_time = time.time()       
-        frontend_vis_img = np.copy(curr_rgb_image)
+        frontend_vis_img = cv2.cvtColor(curr_rgb_image, cv2.COLOR_RGB2BGR)
         # get current corner prediction from the image
         corner_predictions: CornerPredictions = self.corner_detector.createPredictions(curr_rgb_image)
         # must add a new gate/set of corners to track
@@ -490,8 +496,8 @@ class FrontEnd:
                 for tracking_result in tracking_results:
                     if tracking_result[4] == tracked_corner.tracking_id:
                         resulting_bbox = tracking_result[:4]
-                        target_points_2d, hough_viz_img = find_target_points_in_bboxes(curr_depth_image, [resulting_bbox.astype(np.int32)], frontend_vis_img)
-                        frontend_vis_img = hough_viz_img
+                        target_points_2d, hough_viz_img = find_target_points_in_bboxes(curr_depth_image, [resulting_bbox.astype(np.int32)], curr_rgb_image)
+                        frontend_vis_img = cv2.cvtColor(hough_viz_img, cv2.COLOR_RGB2BGR)
                         
                         potential_target_point = target_points_2d[0]
                         if potential_target_point is not None:
@@ -507,16 +513,13 @@ class FrontEnd:
             
             self.curr_corners_tracked = new_curr_corners_tracked
             
-        # cv2.imshow("frontend_vis_img", frontend_vis_img)
-        # cv2.waitKey(0)
         end_time = time.time()
         
         print(f"Total Computation Time : {(end_time - start_time)*1000}ms\n")
-        tracker_vis_img = np.copy(curr_rgb_image)
+        tracker_vis_img = np.copy(cv2.cvtColor(curr_rgb_image, cv2.COLOR_RGB2BGR))
         self.tracker.plot_results(tracker_vis_img, show_trajectories=False)
 
         frcnn_output_img = self.corner_detector.getCurrentVisualization()
-        # cv2.imshow("frcnn_output_img", frcnn_output_img)
 
         for corner_obs in self.curr_corners_tracked:
             if corner_obs.depth is not None:
@@ -524,8 +527,11 @@ class FrontEnd:
                 put_text_above_point(tracker_vis_img, text=str(corner_obs.gate_id), point=corner_obs.point_2d.astype(np.uint32))
                 cv2.circle(tracker_vis_img, corner_obs.point_2d.astype(np.uint32), 4, (255,0,0), -1)
 
-        # cv2.imshow("tracker_vis_img", tracker_vis_img)
-        # cv2.waitKey(1)
+        if VIS_FRONT_END:
+            cv2.imshow("frontend_vis_img", frontend_vis_img)
+            cv2.imshow("tracker_vis_img", tracker_vis_img)
+            cv2.imshow("frcnn_output_img", frcnn_output_img)
+            cv2.waitKey(0)
         # construct and return keyframe info with current tracked points 
         self.prev_rgb_image = curr_rgb_image
 
