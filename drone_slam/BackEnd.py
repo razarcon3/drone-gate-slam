@@ -28,7 +28,7 @@ class BackEnd:
         self.graph = gtsam.NonlinearFactorGraph()
         
         # Noise Models
-        self.odometry_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.1, 0.1, 0.1, 0.1, 0.1, 0.1]))
+        self.odometry_noise = gtsam.noiseModel.Diagonal.Sigmas(np.array([0.1, 0.1, 0.1, 0.2, 0.2, 0.2]))
         self.landmark_projection_noise = gtsam.noiseModel.Isotropic.Sigma(dim=2, sigma=5.0)
         self.landmark_ranging_noise = gtsam.noiseModel.Isotropic.Sigma(1, 0.1)
         self.gate_edge_range_noise = gtsam.noiseModel.Isotropic.Sigma(1, 1e-6)
@@ -122,9 +122,10 @@ class BackEnd:
                 self.landmark_name_to_key[co.gate_id] = {}
             if co.corner_id not in self.landmark_name_to_key[co.gate_id].keys():
                 self.landmark_name_to_key[co.gate_id][co.corner_id] = LandmarkTriangulation(co_key)
-                # initialize on first observation
-                co_3d_guess = est_camera.backproject(co.point_2d, co.depth)
-                self.initial_estimate.insert(co_key, co_3d_guess)
+                if not TRIANGULATE_CORNERS:
+                    # initialize on first observation
+                    co_3d_guess = est_camera.backproject(co.point_2d, co.depth)
+                    self.initial_estimate.insert(co_key, co_3d_guess)
             
             if TRIANGULATE_CORNERS:
                 # add information to triangulate + initialize later
