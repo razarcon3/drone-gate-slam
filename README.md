@@ -2,6 +2,8 @@
 
 This repository contains the source code and documentation for the senior thesis "Graph-Based SLAM for Autonomous Drone Racing" by Robert Azarcon from the University of Illinois at Urbana-Champaign. This project proposes and evaluates a Simultaneous Localization and Mapping (SLAM) system designed for autonomous drone racing, utilizing a factor graph optimization framework. Currently, it only runs in offline mode.
 
+Read the thesis [here](Undergrad_Senior_Thesis.pdf)
+
 ## About The Project
 
 The goal of this research is to enable a drone equipped with only a camera and an IMU sensor to localize itself and map the positions of gates on a race course. The system was developed and tested in a custom simulation environment using Unreal Engine 5.
