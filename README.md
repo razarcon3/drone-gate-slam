@@ -10,7 +10,7 @@ The goal of this research is to enable a drone equipped with only a camera and a
 
 ### Key Features:
 * **Gate Detection**: A Convolutional Neural Network (Faster R-CNN) is used to detect the corner points of race gates from the drone's camera feed.
-* **Visual-Inertial Odometry (VIO)**: A tightly coupled VIO module (VINS-FUSION) runs in parallel to generate odometry data.
+* **Visual-Inertial Odometry (VIO)**: A tightly coupled VIO module (VINS-FUSION) is used to to generate odometry data that will be further optimized with sensor measurements.
 * **Factor Graph Optimization**: Gate corner detections and odometry are integrated over time in a factor graph to simultaneously estimate the drone's trajectory and the 3D positions of the gates.
 
 ## System Design
