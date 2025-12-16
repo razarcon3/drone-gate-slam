@@ -20,7 +20,7 @@ The SLAM system is composed of a "Front End" and a "Back End".
 ### Front End
 The Front End processes visual data to identify and track features on the race gates.
 
-1. **Gate Corner Detection**: Faster R-CNN, trained on the 2019 AlphaPilot Challenge dataset, detects gate corners.
+1. **Gate Corner Detection**: Faster R-CNN, trained on the 2019 AlphaPilot Challenge dataset, detects gate corners. [Training Code](https://github.com/razarcon3/cosys-training)
 2. **Corner Point Refinement**: A refinement step uses the Hough transform to find the precise intersection of the inner edges of the gate corners within the detected bounding boxes.
 3. **Gate Registration and Tracking**: The 3D points of the corners are geometrically verified to match the known dimensions of the gates. The verified corners are then tracked across frames using ByteTrack.
 
